@@ -1,0 +1,930 @@
+────────────────────────── AGENT FACTORY ORCHESTRATOR ──────────────────────────
+Model:       claude-opus-4-8
+Requirement: Build an AI agent that accepts invoice documents (PDF, image, or 
+structured data) and checks their reliability for expen…
+───────────── Running all 11 phases — streaming each response live ─────────────
+───────────────────── [01/11] Phase 1 — Requirement Intake ─────────────────────
+  ↳ Sending request to claude-opus-4-8…
+  ↳ First token received — streaming response:
+
+# Phase 1 — Requirement Intake
+
+**Objective:** Clarify and normalize the raw requirement into a precise, anchorable Requirement Brief that all later phases build from.
+
+---
+
+## Core Problem & Business Goal
+
+**Core problem:** Expense approvers receive invoices in heterogeneous formats (PDF, scanned image, structured data) and must manually verify each one for accuracy, authenticity, and policy compliance before approval. This is slow, inconsistent, error-prone, and vulnerable to fraud (duplicates, altered amounts, fake vendors).
+
+**Business/user goal:** Provide approvers with a fast, consistent, explainable **reliability assessment** of each invoice — extracting key fields, validating authenticity signals, and flagging risk — so humans can approve confidently and quickly. The agent is a **decision-support tool**, never an auto-approver.
+
+---
+
+## Success Metrics
+
+| Category | Metric | Target |
+|---|---|---|
+| Extraction accuracy | Field-level extraction accuracy (vendor, amount, date, tax, currency) | ≥ 95% on clean docs; ≥ 85% on scanned/low-quality |
+| Line-item accuracy | Line-item capture completeness | ≥ 90% |
+| Fraud/risk detection | Duplicate invoice detection recall | ≥ 98% |
+| Fraud/risk detection | Suspicious-invoice flagging precision | ≥ 80% (limit false alarms) |
+| Decision support | Approver agreement with reliability score (spot-audit) | ≥ 90% |
+| Efficiency | Median processing time per invoice | ≤ 30s (see latency constraint) |
+| Efficiency | Reduction in manual review time per invoice | ≥ 50% vs baseline |
+| Safety | Auto-approval incidents | 0 (hard requirement) |
+| Trust | Explanation usefulness rating from approvers | ≥ 4/5 |
+
+> *Baselines (current manual review time, current fraud leakage rate) are open questions — see below.*
+
+---
+
+## In Scope vs Out of Scope
+
+### In Scope
+- Ingestion of invoices as **PDF, image (JPG/PNG/TIFF), and structured data** (JSON/XML/CSV/EDI).
+- **Field extraction:** vendor, total amount, invoice date, line items, tax, currency; plus invoice number, PO number, due date where present.
+- **Authenticity validation:** format/layout consistency, vendor registry lookup, duplicate detection.
+- **Policy compliance checks** against configured expense policy rules.
+- **Multi-currency** handling and normalization.
+- **Reliability score** (structured) with a **human-readable explanation** and itemized flags.
+- Integration with the **vendor database** and **expense policy rule engine**.
+- Output to the **expense approval workflow** for human decision.
+
+### Out of Scope
+- **Auto-approval or auto-rejection** of any invoice (hard exclusion).
+- Payment execution / disbursement.
+- Vendor onboarding or vendor master data management (read-only consumer of vendor DB).
+- Accounting/GL posting and ERP journal entries.
+- Tax filing, regulatory tax computation, or legal tax advice.
+- Contract/PO lifecycle management (consume PO data; do not manage it).
+- Negotiation or communication with vendors.
+- Historical bulk re-scoring of legacy invoices (unless later requested).
+
+---
+
+## Primary Users & Stakeholders
+
+| Role | Relationship | Interest |
+|---|---|---|
+| **Expense approvers / managers** | Primary user | Fast, trustworthy reliability signal to approve/decline |
+| **AP (Accounts Payable) clerks** | Primary user | Triage and exception handling |
+| **Finance controllers** | Stakeholder | Fraud reduction, audit trail, policy enforcement |
+| **Internal audit / compliance** | Stakeholder | Explainability, traceability, control evidence |
+| **Procurement** | Stakeholder | Vendor data accuracy, PO matching |
+| **Security/IT** | Stakeholder | Data handling, integration security, PII protection |
+| **Vendors** | Indirect | Accurate processing of their invoices |
+| **Engineering/Platform team** | Builder | Maintainability, integration contracts |
+
+---
+
+## Key Use-Case Scenarios
+
+1. **Clean digital invoice, known vendor** — Approver uploads a born-digital PDF from a registered vendor. Agent extracts all fields, confirms vendor in registry, no duplicates, passes policy → **high reliability score** with green flags.
+
+2. **Scanned/photographed invoice, OCR required** — AP clerk uploads a phone photo of a paper invoice. Agent runs OCR, extracts fields with confidence scores, flags low-confidence fields for human verification → **medium reliability score** with field-level uncertainty notes.
+
+3. **Suspected duplicate** — A second invoice arrives matching an already-processed one (same/near-same vendor, amount, invoice number, date). Agent detects the duplicate → **low reliability score** with a "potential duplicate" flag and reference to the prior invoice.
+
+4. **Unknown / unregistered vendor** — Invoice from a vendor not in the registry, or with mismatched bank/tax details. Agent flags vendor-registry miss → **low/medium score** with "vendor not verified" flag.
+
+5. **Policy violation** — Amount exceeds approval threshold, missing required PO, disallowed expense category, or wrong currency for the entity. Agent extracts cleanly but flags policy breaches → **medium score** with itemized policy flags.
+
+6. **Tampering / format anomaly** — Invoice shows inconsistent fonts, mismatched totals (line items ≠ stated total), altered date, or structurally inconsistent layout. Agent flags integrity anomalies → **low score** with specific anomaly explanations.
+
+---
+
+## Hard Constraints
+
+| Constraint | Detail / Assumed Target |
+|---|---|
+| **Latency** | Target ≤ 30s median per invoice; ≤ 90s p95 for OCR-heavy docs. *(To confirm — sync UI vs async queue.)* |
+| **Cost** | Per-invoice processing cost target ≤ ~$0.10–$0.25 (model + OCR + lookups). *(Assumed; to confirm.)* |
+| **Compliance** | Audit trail for every score and flag; explainability mandatory; SOX-style internal controls likely; PII/financial-data handling (GDPR/regional). *(Specific regimes TBD.)* |
+| **Data residency** | Assumed region-specific storage/processing may be required; no cross-border transfer of invoice/PII without approval. *(To confirm.)* |
+| **Human-in-the-loop** | **Hard:** agent never auto-approves/rejects; a human always makes the final decision. |
+| **Integrations** | Must integrate with **vendor database** (read) and **expense policy rule engine**. ERP/expense workflow system as output sink. |
+| **Multi-currency** | Must handle multiple currencies; normalization for comparison/policy checks requires FX reference. |
+| **Determinism/auditability** | Same invoice should yield reproducible scores; flag logic must be inspectable. |
+
+---
+
+## Explicit Assumptions
+
+1. The **vendor database** is queryable via API and contains at least vendor name, IDs, tax IDs, and bank/payment details for verification.
+2. The **expense policy rules** are externalized and configurable (rule engine or config), not hardcoded — categories, thresholds, required fields, approval limits.
+3. Historical invoice records are available (or will be) to support **duplicate detection**.
+4. The system operates **post-receipt** in the approval workflow; intake (email, portal upload) is handled by an existing channel that hands invoices to the agent.
+5. An **FX rate source** is available for currency normalization (daily reference rates acceptable).
+6. Output is consumed by an **existing expense/approval UI**; the agent provides structured data + explanation, not the approval UI itself.
+7. Volume is **moderate** (thousands–tens of thousands/month, not millions/day) — sizing to confirm.
+8. English-language invoices are the primary case; multi-language is desirable but not a Phase-1 hard requirement (to confirm).
+9. PII and financial data must be **encrypted at rest and in transit**; access is role-restricted.
+10. "Reliability score" is a **0–100 or banded (Low/Medium/High)** composite — exact scale TBD in later phases.
+
+---
+
+## Top Open Questions (Ranked)
+
+| # | Question | Why it matters |
+|---|---|---|
+| 1 | What are the exact **expense policy rules** and where do they live (rule engine, config, ERP)? | Drives compliance-check design and integration. |
+| 2 | What is the **vendor DB** schema, access method, and what verification fields exist (tax ID, bank account)? | Core to authenticity validation. |
+| 3 | **Sync or async** processing, and what is the true latency SLA / monthly volume? | Determines architecture and cost model. |
+| 4 | What **compliance regimes & data-residency** rules apply (GDPR, SOX, region locks)? | Hard constraints on storage/processing. |
+| 5 | How should the **reliability score** be structured — numeric, banded, or per-dimension sub-scores? | Shapes output contract and approver UX. |
+| 6 | What defines a **duplicate** (exact match vs fuzzy: same vendor+amount+date within N days)? | Detection precision/recall tradeoff. |
+| 7 | Which **languages/regions/currencies** must be supported at launch? | Extraction and FX scope. |
+| 8 | What is the current **manual baseline** (review time, fraud leakage) for ROI measurement? | Needed to quantify success metrics. |
+| 9 | What is the target **expense/approval system** and its input contract? | Output integration. |
+| 10 | Is **PO matching** (3-way match) required at launch or future? | Could expand scope significantly. |
+
+---
+
+## 📌 Requirement Brief (Anchor Block)
+
+> **Capability:** An AI **invoice reliability assessment agent** that supports — but never replaces — human expense approval.
+>
+> **Problem:** Manual invoice verification is slow, inconsistent, and fraud-prone across heterogeneous formats.
+>
+> **What it does:**
+> 1. Ingests invoices (PDF, image, structured data).
+> 2. Extracts key fields (vendor, amount, date, line items, tax, currency, + invoice/PO numbers).
+> 3. Validates authenticity (format/layout consistency, vendor-registry lookup, duplicate detection).
+> 4. Checks expense-policy compliance.
+> 5. Produces a **structured reliability score + human-readable explanation + itemized flags**.
+> 6. Hands output to the human approval workflow.
+>
+> **Hard rules:**
+> - **Never auto-approves or auto-rejects** — a human always decides.
+> - Must integrate with the **vendor database** (read) and **expense policy rule engine**.
+> - Must support **multiple currencies**.
+> - Every score and flag must be **explainable and auditable**.
+>
+> **Primary users:** Expense approvers/managers, AP clerks. **Key stakeholders:** Finance controllers, internal audit, procurement, security.
+>
+> **Success = ** ≥95% field accuracy (clean docs), ≥98% duplicate recall, ≥90% approver agreement, ≤30s median latency, **0 auto-approval incidents**, ≥50% manual-review-time reduction.
+>
+> **Top unknowns to resolve before/within design:** policy-rule source, vendor-DB schema, sync/async + volume, compliance/residency regime, score structure, duplicate definition.
+  ✓ Phase 01 complete  52.4s · 10,730 chars
+─────────────────── [02/11] Phase 2 — Architecture Decision ────────────────────
+  ↳ Sending request to claude-opus-4-8…
+  ↳ First token received — streaming response:
+
+# Phase 2 — Architecture Decision
+
+**Objective:** Decide whether this capability is best delivered as a single agent, multiple specialized agents, or a coordinated multi-agent system, and define the high-level architecture, components, data flows, and trade-offs.
+
+---
+
+## Decision
+
+> **Verdict:** Build a **coordinated multi-agent system using a supervisor (orchestrator) + specialist-agent pattern**, where deterministic validation logic (duplicate detection, vendor lookup, policy rules, FX) runs as **tools/services**, and LLM-driven reasoning is confined to extraction, anomaly interpretation, and explanation synthesis.
+
+This is a **hybrid**: a small set of specialized agents orchestrated by a supervisor, with the bulk of authenticity/compliance verification performed by deterministic, auditable tools rather than by model judgment.
+
+---
+
+## Justification (mapped to the Requirement Brief)
+
+| Brief requirement | Architectural implication | Why multi-agent (not single) |
+|---|---|---|
+| Heterogeneous inputs (PDF / image / structured) | Needs format-specific ingestion + OCR path | Ingestion/extraction is a distinct concern with its own failure modes and confidence scoring — isolate it. |
+| Distinct validation domains (format, vendor registry, duplicates, policy) | Each is a separable check with different data sources & logic | Separation of concerns: each specialist can be built, tested, tuned, and audited independently; failures are localized. |
+| **Explainability & auditability mandatory** | Each flag must trace to a specific check with inputs/outputs | Specialist agents/tools produce **discrete, attributable evidence**; a monolith blurs traceability. |
+| **Reproducible / deterministic scoring** | Score must be computed by inspectable logic | Scoring is a **deterministic aggregation tool**, not LLM freeform — isolating it guarantees reproducibility (key open question #5/#6). |
+| **0 auto-approval (hard)** | Terminal output is advisory only | A dedicated output/handoff boundary makes "never approve" a structural property, not a prompt hope. |
+| Multi-currency normalization | FX reference + normalization step | Discrete tool, reused across policy and scoring. |
+| ≤30s median latency | Parallelizable checks | Independent specialists (vendor lookup, duplicate scan, policy) run **concurrently**, which a single sequential agent cannot. |
+| ≥95% extraction / ≥98% duplicate recall | Each metric maps to one component | Enables targeted evaluation & tuning per Phase 8/9. |
+
+**Why not a single agent:** A single monolithic agent would (a) entangle OCR/extraction with verification, hurting testability; (b) push deterministic checks (duplicate, policy, FX) into LLM reasoning, breaking reproducibility and auditability; (c) prevent parallelism, risking the 30s SLA; (d) make the "never auto-approve" guarantee a prompt convention rather than a structural one.
+
+**Why not a fully autonomous many-agent swarm:** Overkill for a bounded, well-defined pipeline. Adds coordination overhead, nondeterminism, and cost with no benefit. The decision space is finite and the workflow is largely linear with a parallel verification stage.
+
+---
+
+## High-Level Architecture
+
+**Pattern:** Supervisor-orchestrated pipeline with a **parallel verification fan-out / fan-in**, deterministic scoring, and a hard advisory-only output boundary.
+
+```
+                          ┌─────────────────────────────────────────────────────┐
+   Invoice (PDF/img/      │              ORCHESTRATOR (Supervisor)               │
+   structured) from  ───▶ │  routing · state · concurrency · termination ·       │
+   intake channel         │  audit logging · "never auto-approve" enforcement    │
+                          └───────┬───────────────────────────────┬─────────────┘
+                                  │                                │
+                       (1) ┌──────▼───────┐                        │
+                           │  Ingestion & │   normalized fields    │
+                           │  Extraction  │───────┐  + confidence  │
+                           │    Agent     │       │                │
+                           │ (OCR + LLM)  │       │                │
+                           └──────────────┘       │                │
+                                                   ▼                │
+                          (2) PARALLEL VERIFICATION FAN-OUT         │
+            ┌────────────────┬────────────────┬───────────────┐    │
+            ▼                ▼                ▼               ▼     │
+   ┌────────────────┐ ┌─────────────┐ ┌─────────────┐ ┌──────────────┐
+   │ Vendor         │ │ Duplicate   │ │ Policy      │ │ Integrity /  │
+   │ Verification   │ │ Detection   │ │ Compliance  │ │ Format       │
+   │ (vendor DB)    │ │ (history DB)│ │ (rule eng.) │ │ Anomaly Agent│
+   └───────┬────────┘ └──────┬──────┘ └──────┬──────┘ └──────┬───────┘
+           └─────────────────┴────────┬──────┴───────────────┘
+                                       ▼ (fan-in: evidence bundle)
+                          (3) ┌──────────────────┐
+                              │  Reliability      │  deterministic, weighted
+                              │  Scoring Engine   │  → score + sub-scores + flags
+                              │  (tool, not LLM)  │
+                              └─────────┬─────────┘
+                                        ▼
+                          (4) ┌──────────────────┐
+                              │  Explanation /    │  human-readable rationale
+                              │  Narrative Agent  │  (LLM, grounded in evidence)
+                              └─────────┬─────────┘
+                                        ▼
+                          (5) ┌──────────────────┐
+                              │  Output / Handoff │  structured payload → approval UI
+                              │  Boundary         │  (advisory ONLY, never approves)
+                              └──────────────────┘
+
+   Cross-cutting: FX Normalization tool · Audit/Trace store · PII vault (encrypt at rest/in transit)
+```
+
+### Data Flow (summary)
+1. **Intake →** Orchestrator receives invoice + metadata; creates a job with an audit ID.
+2. **Extraction →** Ingestion & Extraction Agent classifies format, runs OCR if needed, extracts fields with per-field confidence; normalizes currency via FX tool.
+3. **Verification (parallel) →** Four specialists run concurrently against external systems, each returning structured evidence + sub-signals.
+4. **Scoring →** Deterministic engine aggregates evidence into a reliability score, sub-scores, and itemized flags using configurable weights.
+5. **Explanation →** Narrative Agent produces a grounded, human-readable explanation strictly from the evidence bundle (no new facts).
+6. **Handoff →** Output boundary emits a structured payload to the approval workflow — **decision-support only**.
+
+### External Systems / Tools
+| External system | Interaction | Direction |
+|---|---|---|
+| OCR engine (e.g., cloud OCR / Textract-class) | Text + layout extraction from images/PDFs | Call out |
+| Vendor database | Vendor identity, tax ID, bank/payment verification | Read |
+| Historical invoice store | Duplicate / near-duplicate lookup | Read |
+| Expense policy rule engine | Compliance evaluation | Read / evaluate |
+| FX rate source | Currency normalization (daily reference) | Read |
+| Approval workflow / expense UI | Output sink for structured assessment | Write (advisory) |
+| Audit / trace store | Immutable record of inputs, evidence, scores, flags | Write |
+| PII vault / encrypted store | Secure storage of invoice + PII | Read/Write |
+
+---
+
+## Component Table
+
+| Component | Type | Responsibility |
+|---|---|---|
+| **Orchestrator (Supervisor)** | Orchestrator agent | Routes the job through phases, manages shared state, runs verification fan-out concurrently, enforces timeouts/retries, writes audit trail, **structurally guarantees no auto-approval**, decides termination. |
+| **Ingestion & Extraction Agent** | Specialist (LLM + OCR tools) | Detects format; runs OCR for images/scanned PDFs; extracts fields (vendor, amount, date, line items, tax, currency, invoice/PO #) with **per-field confidence**; structures into canonical schema. |
+| **Vendor Verification Agent** | Specialist (tool-heavy) | Looks up vendor in vendor DB; matches name/tax ID/bank details; flags unknown vendors, mismatched payment details, fuzzy matches. |
+| **Duplicate Detection Agent** | Specialist (tool-heavy) | Queries historical invoices for exact and fuzzy duplicates (vendor + amount + invoice # + date window); returns match references and confidence. |
+| **Policy Compliance Agent** | Specialist (tool-heavy) | Submits normalized invoice to rule engine; returns itemized policy pass/fail (thresholds, required PO, category, currency-for-entity). |
+| **Integrity / Format Anomaly Agent** | Specialist (LLM + heuristics) | Detects tampering/anomaly signals: line-items vs total mismatch, font/layout inconsistency, impossible dates, structural irregularities. |
+| **FX Normalization Tool** | Tool/service | Converts amounts to a base currency using reference rates for policy comparison and scoring. |
+| **Reliability Scoring Engine** | Deterministic tool | Aggregates all evidence into a composite reliability score + per-dimension sub-scores + itemized flags using **configurable, inspectable weights**. Reproducible. |
+| **Explanation / Narrative Agent** | Specialist (LLM) | Produces a human-readable explanation **grounded strictly in the evidence bundle**; no new claims; cites each flag. |
+| **Output / Handoff Boundary** | Service/contract | Serializes the final structured payload, validates schema, and delivers to the approval UI as advisory only. |
+| **Audit / Trace Store** | Infrastructure | Immutable per-job record: inputs, intermediate evidence, score derivation, model versions, timestamps. Supports SOX/audit. |
+| **PII Vault / Secure Store** | Infrastructure | Encrypted storage of invoice docs and extracted PII; role-restricted; supports data-residency controls. |
+
+---
+
+## Trade-offs
+
+| Decision | Benefit | Cost / Trade-off | Mitigation |
+|---|---|---|---|
+| Supervisor + specialists (not monolith) | Localized testing, parallelism, clean audit attribution | More moving parts, orchestration code | Keep specialist set small (4); standardize evidence schema. |
+| Deterministic scoring engine (not LLM scoring) | Reproducibility, auditability, tunable | Less "smart" nuance in scoring | LLM contributes *signals/anomalies as evidence*; scoring weights are config-driven and reviewable. |
+| Parallel verification fan-out | Meets ≤30s SLA | Concurrency/error-handling complexity | Orchestrator enforces per-branch timeouts + partial-result handling. |
+| LLM confined to extraction, anomaly reading, explanation | Limits hallucination blast radius | Requires strong grounding discipline | Narrative agent restricted to evidence bundle; extraction emits confidence for HITL. |
+| External rule engine & vendor DB as tools | Reuses source-of-truth systems; no duplication | Dependency on external availability/latency | Timeouts, caching of FX/vendor reads, graceful degradation with explicit flags. |
+
+---
+
+## Rejected Alternatives
+
+| Alternative | Why rejected |
+|---|---|
+| **Single monolithic agent** | Entangles OCR/extraction with verification; pushes deterministic checks into LLM (breaks reproducibility & audit); no parallelism (SLA risk); "never approve" becomes a prompt convention, not structural. |
+| **Fully autonomous multi-agent swarm (e.g., market/blackboard with emergent coordination)** | Unnecessary nondeterminism and cost for a bounded, near-linear pipeline; harder to audit; coordination overhead with no decision-space benefit. |
+| **Pure deterministic rules engine (no LLM at all)** | Cannot robustly handle OCR/extraction across heterogeneous formats or interpret nuanced format/tampering anomalies; brittle to layout variation. |
+| **LLM-as-scorer (model outputs the reliability score directly)** | Violates reproducibility/auditability constraint; scores would drift and be hard to defend in audit/SOX context. |
+| **Two-tier (extraction agent + one giant "validator" agent)** | Re-monolithizes verification; loses per-check attribution and independent tuning of vendor/duplicate/policy/integrity metrics. |
+
+---
+
+## Key Assumptions Carried Forward (from Phase 1, refined)
+
+1. Verification specialists are **tool-heavy and largely deterministic**; LLM reasoning is reserved for extraction, anomaly interpretation, and explanation.
+2. Scoring is a **deterministic, config-weighted aggregation** — exact scale/weights deferred to later phases (open question #5).
+3. Vendor DB, history store, rule engine, and FX source are **API-accessible** (open questions #1, #2, #6).
+4. Processing mode (sync vs async) is **not yet locked** (open question #3); the architecture supports both — orchestrator can run synchronously under the SLA or as an async job. **To be decided in Phase 5/6.**
+
+> **Deviation flag:** None. This architecture is fully consistent with the Phase 1 brief and elevates the "never auto-approve" rule from a behavioral constraint to a **structural boundary** (the Output/Handoff component).
+  ✓ Phase 02 complete  62.7s · 13,217 chars
+─────────────────── [03/11] Phase 3 — Agent Characterization ───────────────────
+  ↳ Sending request to claude-opus-4-8…
+  ↳ First token received — streaming response:
+
+# Phase 3 — Agent Characterization
+
+**Objective:** Define a precise, build-ready profile for each agent (and key tool component) in the Phase 2 supervisor + specialist architecture, including type, ownership, tools, capabilities, constraints, tone, autonomy, and I/O contract.
+
+---
+
+## Roster Overview
+
+| # | Component | Type | Autonomy | LLM-driven? |
+|---|---|---|---|---|
+| A0 | **Orchestrator** | Orchestrator | Semi-autonomous | No (control logic) |
+| A1 | **Ingestion & Extraction Agent** | Specialist | Semi-autonomous | Yes (+OCR tools) |
+| A2 | **Vendor Verification Agent** | Specialist (tool-heavy) | Semi-autonomous | Light (fuzzy reasoning only) |
+| A3 | **Duplicate Detection Agent** | Specialist (tool-heavy) | Semi-autonomous | Light (match adjudication) |
+| A4 | **Policy Compliance Agent** | Specialist (tool-heavy) | Semi-autonomous | No (rule-engine wrapper) |
+| A5 | **Integrity / Format Anomaly Agent** | Specialist | Semi-autonomous | Yes (+heuristics) |
+| A6 | **Explanation / Narrative Agent** | Specialist | Supervised | Yes |
+| T1 | **Reliability Scoring Engine** | Tool (deterministic) | N/A (pure function) | No |
+| T2 | **FX Normalization Tool** | Tool (deterministic) | N/A | No |
+
+> Tools T1/T2 and the Output/Handoff Boundary are characterized briefly at the end; the eight numbered components above are the primary agents. The "never auto-approve" rule is enforced structurally at the Orchestrator + Output Boundary, never delegated to a specialist.
+
+---
+
+## A0 — Orchestrator (Supervisor)
+
+| Field | Specification |
+|---|---|
+| **Name** | `InvoiceReliabilityOrchestrator` |
+| **Purpose** | Drive an invoice through extraction → parallel verification → scoring → explanation → handoff; manage shared state, concurrency, retries, timeouts, audit logging; **structurally guarantee no auto-approval**. |
+| **Agent type** | Orchestrator (control-plane; deterministic logic, not LLM). |
+| **Target users** | Indirect — serves all primary users by coordinating the pipeline; directly "used" by the intake channel and platform engineers. |
+| **Scenarios owned** | All scenarios end-to-end (1–6); specifically owns: job lifecycle, fan-out/fan-in, partial-failure handling, SLA enforcement, audit completeness. |
+| **Tools / integrations** | Internal: invokes A1–A6, T1, T2. Infra: Audit/Trace store (write), PII vault (orchestrates access), job queue / state store, FX & vendor read-caches. |
+| **Capabilities** | • Format-agnostic job intake & audit-ID assignment.<br>• Sequential gate (extraction) then **parallel verification fan-out** (A2–A5).<br>• Per-branch timeout, retry-with-backoff, partial-result aggregation.<br>• Deterministic invocation of scoring engine, then narrative agent.<br>• Emits only advisory output; **cannot** mark approved/rejected. |
+| **Constraints** | • Must never set an approval/rejection state.<br>• Must enforce per-invoice latency budget (≤30s median / ≤90s p95).<br>• Must write a complete audit record even on failure.<br>• Must degrade gracefully (mark dimension as `unverified`, never silently drop a check). |
+| **Personality / tone** | None user-facing; logs are precise, neutral, machine-parseable. |
+| **Autonomy level** | **Semi-autonomous** — runs the pipeline without human input but produces only advisory output and routes ambiguous/low-confidence cases to HITL flags. |
+| **Input contract** | `{ job_id?, source_channel, document(s): {type: pdf|image|structured, ref/bytes}, metadata: {entity_id, submitter, currency_hint?, po_ref?}, config_version }` |
+| **Output contract** | A complete `ReliabilityAssessment` envelope (see Output Boundary) + `audit_record_id`. Status ∈ `{completed, completed_with_degradation, failed}`. **No approval field.** |
+
+---
+
+## A1 — Ingestion & Extraction Agent
+
+| Field | Specification |
+|---|---|
+| **Name** | `ExtractionAgent` |
+| **Purpose** | Detect document format, OCR if needed, and extract canonical invoice fields with **per-field confidence**. |
+| **Agent type** | Specialist (LLM + OCR tools). |
+| **Target users** | AP clerks & approvers (indirectly — provides the data they review); first hop for all inputs. |
+| **Scenarios owned** | Primary owner of Scenario 1 (clean digital) and Scenario 2 (scanned/OCR with low-confidence flagging). Feeds all others. |
+| **Tools / integrations** | OCR engine (Textract-class); format/MIME classifier; structured-data parsers (JSON/XML/CSV/EDI); FX Normalization tool (T2) for currency tagging; PII vault (write extracted PII). |
+| **Capabilities** | • Classify born-digital vs scanned vs structured.<br>• Extract: vendor, total amount, invoice date, line items, tax, currency, invoice #, PO #, due date.<br>• Emit **per-field confidence (0–1)** and source span/coordinates.<br>• Map to canonical schema; flag fields below confidence threshold for HITL.<br>• Reconcile line-item sums vs stated total (pass signal to A5). |
+| **Constraints** | • Must NOT infer/guess missing fields — emit `null` + low confidence rather than fabricate.<br>• Must preserve original currency as-extracted; normalization is additive, never destructive.<br>• Must not perform verification or scoring.<br>• Confidence below threshold (default <0.70) ⇒ field flagged `needs_human_verification`. |
+| **Personality / tone** | Internal; conservative, literal, "extract-what-is-present" discipline. |
+| **Autonomy level** | **Semi-autonomous** — extracts without supervision but escalates low-confidence fields via flags. |
+| **Input contract** | `{ job_id, document: {type, bytes/ref}, metadata: {currency_hint?, entity_id} }` |
+| **Output contract** | `CanonicalInvoice { vendor{name,tax_id?,bank?}, invoice_number, po_number?, invoice_date, due_date?, currency, amount_total, tax{amount,rate?}, line_items[], normalized{base_currency, amount_total_base, fx_rate, fx_date} }` + `field_confidences{field: 0-1}` + `extraction_warnings[]`. |
+
+---
+
+## A2 — Vendor Verification Agent
+
+| Field | Specification |
+|---|---|
+| **Name** | `VendorVerificationAgent` |
+| **Purpose** | Confirm the invoice's vendor against the vendor registry and surface identity/payment mismatches. |
+| **Agent type** | Specialist (tool-heavy; light LLM for fuzzy name adjudication only). |
+| **Target users** | Approvers, AP clerks, procurement (vendor-data accuracy). |
+| **Scenarios owned** | Primary owner of Scenario 4 (unknown/unregistered vendor, mismatched bank/tax). |
+| **Tools / integrations** | Vendor database (read API), fuzzy-match library, vendor read-cache. |
+| **Capabilities** | • Exact + fuzzy match on vendor name, tax ID, registered ID.<br>• Compare invoice bank/payment details vs registry-of-record.<br>• Classify: `verified`, `fuzzy_match`, `unknown_vendor`, `payment_detail_mismatch`.<br>• Return matched vendor record reference + match confidence. |
+| **Constraints** | • Read-only against vendor DB (no writes / onboarding).<br>• Must not approve or downscore directly — emits evidence only.<br>• Must flag, not resolve, ambiguous fuzzy matches (multiple candidates ⇒ `ambiguous` + candidate list).<br>• Payment-detail comparison must avoid logging full bank numbers in plaintext (mask). |
+| **Personality / tone** | Internal; precise, evidence-first, non-accusatory ("not found in registry" not "fake vendor"). |
+| **Autonomy level** | **Semi-autonomous.** |
+| **Input contract** | `{ job_id, vendor{name, tax_id?, bank?}, entity_id }` |
+| **Output contract** | `VendorEvidence { status, matched_vendor_id?, match_confidence, mismatches[], candidates[]?, registry_query_ts, evidence_notes[] }` |
+
+---
+
+## A3 — Duplicate Detection Agent
+
+| Field | Specification |
+|---|---|
+| **Name** | `DuplicateDetectionAgent` |
+| **Purpose** | Detect exact and near-duplicate invoices against the historical invoice store. |
+| **Agent type** | Specialist (tool-heavy; light LLM only for borderline near-match adjudication). |
+| **Target users** | Approvers, AP clerks, finance controllers (fraud/double-pay prevention). |
+| **Scenarios owned** | Primary owner of Scenario 3 (suspected duplicate). |
+| **Tools / integrations** | Historical invoice store (read/query API), fuzzy/blocking match index, configurable duplicate-rule set (open question #6). |
+| **Capabilities** | • Exact key match (vendor + invoice # + amount + date).<br>• Fuzzy match: same vendor + amount within tolerance + date within N-day window.<br>• Return matched prior invoice references + match type + confidence.<br>• Tunable thresholds via config (recall-prioritized per ≥98% target). |
+| **Constraints** | • Read-only; no marking of prior records.<br>• Recall-first posture (default) — must err toward flagging, leaving final call to human.<br>• Must return reference IDs to prior invoice(s), never silently suppress.<br>• Duplicate definition is **config-driven**, not hardcoded. |
+| **Personality / tone** | Internal; factual ("matches prior invoice INV-2024-0412 on vendor+amount+date"). |
+| **Autonomy level** | **Semi-autonomous.** |
+| **Input contract** | `{ job_id, vendor_key, invoice_number?, amount_base, invoice_date, entity_id }` |
+| **Output contract** | `DuplicateEvidence { status: none|exact|near, matches[]{prior_invoice_id, match_type, score, matched_on[]}, rule_set_version, query_ts }` |
+
+---
+
+## A4 — Policy Compliance Agent
+
+| Field | Specification |
+|---|---|
+| **Name** | `PolicyComplianceAgent` |
+| **Purpose** | Evaluate the normalized invoice against the externalized expense-policy rule engine and return itemized pass/fail. |
+| **Agent type** | Specialist (tool-heavy; deterministic — a typed wrapper over the rule engine, **no LLM**). |
+| **Target users** | Approvers, finance controllers, internal audit. |
+| **Scenarios owned** | Primary owner of Scenario 5 (policy violations: threshold, missing PO, disallowed category, wrong currency). |
+| **Tools / integrations** | Expense policy rule engine (evaluate API), entity/currency config, FX-normalized amounts from T2. |
+| **Capabilities** | • Submit normalized invoice + context (entity, category, amount-in-base) to rule engine.<br>• Return per-rule outcomes: rule ID, description, status, observed vs expected.<br>• Cover thresholds, required PO/fields, allowed categories, entity-currency rules.<br>• Carry rule-set version for auditability. |
+| **Constraints** | • **No LLM judgment** — policy outcomes must be deterministic and reproducible for SOX/audit.<br>• Must not approve/reject — emits compliance evidence only.<br>• Must surface "rule could not be evaluated" (missing input) distinctly from "rule failed."<br>• Rules are externalized/config-driven (Assumption #2), never inlined. |
+| **Personality / tone** | Internal; strictly factual, rule-cited. |
+| **Autonomy level** | **Semi-autonomous.** |
+| **Input contract** | `{ job_id, invoice: CanonicalInvoice(normalized), entity_id, category?, po_present, policy_version }` |
+| **Output contract** | `PolicyEvidence { overall: pass|fail|partial, results[]{rule_id, desc, status: pass|fail|unevaluable, observed, expected}, policy_version, eval_ts }` |
+
+---
+
+## A5 — Integrity / Format Anomaly Agent
+
+| Field | Specification |
+|---|---|
+| **Name** | `IntegrityAnomalyAgent` |
+| **Purpose** | Detect tampering and structural anomaly signals (arithmetic, layout, font, date plausibility). |
+| **Agent type** | Specialist (LLM-assisted + deterministic heuristics). |
+| **Target users** | Approvers, finance controllers, internal audit (fraud signals). |
+| **Scenarios owned** | Primary owner of Scenario 6 (tampering/format anomaly). |
+| **Tools / integrations** | Heuristic check library (sum reconciliation, date-validity), layout/font-consistency analyzer, OCR layout metadata from A1; LLM for interpreting structural irregularities. |
+| **Capabilities** | • Reconcile Σ(line items) + tax vs stated total (deterministic).<br>• Detect impossible/implausible dates (future-dated, pre-vendor-registration).<br>• Flag font/layout inconsistency, splice/overlay artifacts, inconsistent number formatting.<br>• Classify each anomaly with type + severity + evidence pointer. |
+| **Constraints** | • Must ground every anomaly in a concrete, citable signal — **no speculative "looks fake."**<br>• Arithmetic checks must be deterministic (LLM not trusted for math).<br>• Emits evidence + severity only; does not score or reject.<br>• Must distinguish "anomaly detected" from "low OCR confidence" (no double-penalizing). |
+| **Personality / tone** | Internal; cautious, evidence-anchored, avoids accusatory framing. |
+| **Autonomy level** | **Semi-autonomous.** |
+| **Input contract** | `{ job_id, invoice: CanonicalInvoice, layout_meta?, field_confidences, vendor_registration_date? }` |
+| **Output contract** | `IntegrityEvidence { anomalies[]{type, severity: low|med|high, signal, evidence_ref}, arithmetic_check: pass|fail, summary }` |
+
+---
+
+## A6 — Explanation / Narrative Agent
+
+| Field | Specification |
+|---|---|
+| **Name** | `ExplanationAgent` |
+| **Purpose** | Produce a clear, human-readable explanation of the reliability score and flags, **grounded strictly in the evidence bundle**. |
+| **Agent type** | Specialist (LLM). |
+| **Target users** | Expense approvers/managers (primary readers), AP clerks, internal audit. |
+| **Scenarios owned** | Cross-cutting — owns the explanation layer for all scenarios; tailors narrative emphasis per dominant flag type. |
+| **Tools / integrations** | None external. Consumes: scoring output (T1), all evidence (A2–A5), extraction confidences (A1). |
+| **Capabilities** | • Summarize score + sub-scores in plain language.<br>• Cite each flag back to its source evidence.<br>• Surface what the human should verify (especially low-confidence fields).<br>• Maintain neutral, decision-support framing ("review recommended," never "approve/reject"). |
+| **Constraints** | • **Zero new facts** — must only restate/explain provided evidence; no inference of intent or fraud guilt.<br>• Must never recommend or imply an approval/rejection decision.<br>• Must flag, in text, which fields need human verification.<br>• Output length bounded; must be skimmable. |
+| **Personality / tone** | **Professional, concise, neutral, non-accusatory, audit-friendly.** Clear and supportive — like a diligent analyst summarizing findings, not a judge. |
+| **Autonomy level** | **Supervised** — its output is consumed directly by humans, so it sits closest to the human and is the most tightly guardrailed (grounding + refusal language). |
+| **Input contract** | `{ job_id, score, sub_scores, flags[], evidence_bundle{vendor,duplicate,policy,integrity,extraction_conf} }` |
+| **Output contract** | `Explanation { summary, reliability_band, key_flags[]{flag, why, evidence_ref}, items_to_verify[], disclaimer: "Advisory only — human approval required" }` |
+
+---
+
+## T1 — Reliability Scoring Engine (Tool)
+
+| Field | Specification |
+|---|---|
+| **Name** | `ReliabilityScoringEngine` |
+| **Type** | **Deterministic tool** (pure function; no LLM). |
+| **Purpose** | Aggregate all evidence into a composite reliability score, per-dimension sub-scores, and an itemized flag list via configurable, inspectable weights. |
+| **Capabilities** | • Map each evidence signal → contribution.<br>• Compute weighted composite + sub-scores (extraction, vendor, duplicate, policy, integrity).<br>• Emit reliability band (Low/Medium/High) per configurable cut-points.<br>• Fully **reproducible** for identical inputs + config version. |
+| **Constraints** | • No randomness; deterministic given `(evidence, weights_version)`.<br>• Weights externalized/config-driven; changes are versioned & audited.<br>• Outputs a score, **never a decision**. |
+| **Input contract** | `{ job_id, vendor_evidence, duplicate_evidence, policy_evidence, integrity_evidence, field_confidences, weights_version }` |
+| **Output contract** | `Score { composite: 0-100, band, sub_scores{}, flags[], weights_version }` |
+
+---
+
+## T2 — FX Normalization Tool (Tool)
+
+| Field | Specification |
+|---|---|
+| **Name** | `FXNormalizationTool` |
+| **Type** | **Deterministic tool** (no LLM). |
+| **Purpose** | Convert invoice amounts to a base currency using dated reference rates for policy comparison and scoring. |
+| **Capabilities** | • Look up reference rate for `(currency, date)`; convert total/tax.<br>• Tag result with rate + rate date for audit. |
+| **Constraints** | • Never overwrites original currency values (additive).<br>• Uses dated reference rates (Assumption #5); missing rate ⇒ explicit `fx_unavailable` flag, not a guess. |
+| **Input contract** | `{ amount, currency, base_currency, value_date }` |
+| **Output contract** | `{ amount_base, fx_rate, fx_date, status }` |
+
+---
+
+## Output / Handoff Boundary (Service — structural guarantee)
+
+| Field | Specification |
+|---|---|
+| **Name** | `AdvisoryHandoffBoundary` |
+| **Type** | Service / schema contract (not an agent). |
+| **Purpose** | Serialize and schema-validate the final `ReliabilityAssessment`, then deliver to the approval workflow **as advisory only**. |
+| **Constraints (hard)** | • The output schema **has no `approved`/`rejected` field the agent can set** — only the score, band, flags, explanation, and `human_decision_required: true`.<br>• Rejects any payload missing audit ID, score, or explanation.<br>• This is where "0 auto-approval incidents" is structurally enforced (Phase 1 hard rule). |
+| **Output contract** | `ReliabilityAssessment { job_id, audit_record_id, extracted_invoice, score, band, sub_scores, flags[], explanation, items_to_verify[], human_decision_required: true, model_versions{}, config_versions{}, timestamps{} }` |
+
+---
+
+## Cross-Agent Conventions (carried into Phase 4)
+
+| Convention | Rule |
+|---|---|
+| **Evidence-only specialists** | A2–A5 emit structured evidence; none compute the score or a decision. |
+| **Confidence everywhere** | Every extracted field and match carries a confidence; sub-threshold ⇒ HITL flag. |
+| **Grounding discipline** | A1, A5, A6 (LLM agents) must not fabricate; A6 may only restate provided evidence. |
+| **Determinism for audit** | Policy (A4), scoring (T1), FX (T2) are deterministic + version-stamped. |
+| **No-decision invariant** | No agent or tool may set approval state; enforced at Orchestrator + Handoff Boundary. |
+| **Non-accusatory tone** | Fraud-adjacent flags use neutral, evidence-based language ("not found in registry"), never guilt assertions. |
+
+> **Deviation flag:** None. All profiles are consistent with the Phase 2 architecture. Two refinements made explicit for build-readiness: (1) A2 and A3 are designated *tool-heavy with light LLM only for fuzzy adjudication*; (2) A4 is designated **fully deterministic (no LLM)** to protect SOX/audit reproducibility. Open questions #1 (policy source), #2 (vendor schema), #5 (score structure), #6 (duplicate definition) remain inputs to Phases 4–5.
+  ✓ Phase 03 complete  95.3s · 18,756 chars
+───────────────── [04/11] Phase 4 — Multi-Agent Orchestration ──────────────────
+  ↳ Sending request to claude-opus-4-8…
+  ↳ First token received — streaming response:
+
+# Phase 4 — Multi-Agent Orchestration Design
+
+**Objective:** Define exactly how the Orchestrator and specialists coordinate at runtime — the orchestration pattern, message/handoff contracts, routing logic, shared state/memory model, conflict resolution, and termination conditions — and trace the end-to-end flow for the primary scenarios.
+
+---
+
+## 1. Orchestration Pattern
+
+> **Pattern chosen:** **Supervisor (orchestrator) + staged pipeline with a parallel fan-out/fan-in verification stage.**
+> Formally: a **hierarchical supervisor** whose control loop runs a **two-phase pipeline** — Stage A (sequential extraction gate) → Stage B (parallel verification) → Stage C (deterministic scoring) → Stage D (narrative) → Stage E (handoff).
+
+### Why this pattern (not the alternatives)
+
+| Pattern | Verdict | Reasoning |
+|---|---|---|
+| **Supervisor + staged pipeline (chosen)** | ✅ | Workflow is near-linear with one parallelizable stage. Supervisor centralizes state, audit, timeout/retry, and the **no-auto-approve invariant**. Deterministic, inspectable, easy to test per stage. |
+| Pure sequential pipeline | ❌ | Would serialize the 4 verification checks → blows the ≤30s SLA. |
+| Blackboard | ❌ | No need for opportunistic, emergent contribution; the evidence set is fixed and known. Adds nondeterminism. |
+| Market / bidding | ❌ | No resource-contention or task-allocation problem to solve. Overkill. |
+| Peer-to-peer agent chat | ❌ | Specialists never need to talk to each other; they only emit evidence to the supervisor. Direct agent-to-agent messaging would weaken auditability. |
+
+### Key structural properties
+- **Star topology**: specialists communicate **only with the Orchestrator**, never with each other. This is deliberate — it guarantees every handoff is logged and attributable (audit requirement).
+- **The Orchestrator is the only stateful actor.** Specialists (A1–A6) and tools (T1–T2) are **stateless functions** of their inputs. This makes them independently testable and the whole pipeline reproducible.
+- **The "no-decision" invariant is structural**, enforced at two points: the Orchestrator never writes an approval state, and the Handoff Boundary schema has no settable approval field.
+
+---
+
+## 2. Stage Map & Concurrency Model
+
+```
+STAGE A (sequential gate)          STAGE B (parallel fan-out)        STAGE C → D → E (sequential)
+┌──────────────┐                   ┌──────────────────────────┐
+│  A1 Extraction│  ──gate pass──▶  │  ┌─A2 Vendor──────────┐   │     ┌─T1 Score─┐  ┌─A6 Narrate─┐  ┌─Handoff─┐
+│  (+T2 FX)     │                   │  ├─A3 Duplicate───────┤   │ ──▶ │ determ.  │─▶│   LLM      │─▶│ advisory│
+└──────────────┘                   │  ├─A4 Policy──────────┤   │     └──────────┘  └────────────┘  └─────────┘
+       │                           │  └─A5 Integrity───────┘   │
+       └─ if extraction fails ─────┘   (run concurrently)      │
+          → degrade / halt           fan-in: evidence bundle
+```
+
+| Stage | Components | Execution | Gate condition to proceed |
+|---|---|---|---|
+| **A — Extraction gate** | A1 (+T2) | Sequential | A1 returns a `CanonicalInvoice` with **at least the minimal key fields** (vendor, amount, currency, date) present at any confidence, OR returns `extraction_failed`. |
+| **B — Verification fan-out** | A2, A3, A4, A5 | **Parallel** | All four resolve to `success` / `degraded` / `timeout` within branch budget. |
+| **C — Scoring** | T1 | Sequential (deterministic) | Always runs once evidence bundle assembled (even partial). |
+| **D — Narrative** | A6 | Sequential (LLM) | Always runs once score exists. |
+| **E — Handoff** | AdvisoryHandoffBoundary | Sequential | Schema-valid `ReliabilityAssessment` with audit ID, score, explanation. |
+
+---
+
+## 3. Message & Handoff Contracts
+
+All inter-component messages are **typed envelopes** wrapping the I/O contracts defined in Phase 3. Every envelope carries correlation + audit metadata.
+
+### 3.1 Common message envelope
+
+```json
+{
+  "envelope": {
+    "job_id": "uuid",
+    "audit_record_id": "uuid",
+    "correlation_id": "uuid",
+    "stage": "A|B|C|D|E",
+    "from": "orchestrator|A1..A6|T1|T2",
+    "to":   "orchestrator|A1..A6|T1|T2",
+    "attempt": 1,
+    "issued_at": "ISO-8601",
+    "config_versions": { "weights": "v3", "policy": "p12", "dup_rules": "d4", "fx": "2025-..." },
+    "deadline_at": "ISO-8601"
+  },
+  "payload": { /* the Phase-3 I/O contract for the target component */ }
+}
+```
+
+### 3.2 Per-handoff contracts (what each transition carries)
+
+| # | Handoff | Trigger | Request payload (→) | Response payload (←) | Status values |
+|---|---|---|---|---|---|
+| H1 | Intake → A0 | Invoice received | Orchestrator input contract (job, document(s), metadata) | `job_id`, `audit_record_id` | `accepted` / `rejected_intake` |
+| H2 | A0 → A1 | Stage A start | `{document, currency_hint?, entity_id}` | `CanonicalInvoice + field_confidences + extraction_warnings` | `success` / `partial` / `extraction_failed` |
+| H3 | A1 → T2 (via A0) | Currency present | `{amount, currency, base_currency, value_date}` | `{amount_base, fx_rate, fx_date, status}` | `ok` / `fx_unavailable` |
+| H4 | A0 → A2 | Stage B fan-out | `{vendor{name,tax_id?,bank?}, entity_id}` | `VendorEvidence` | `success` / `degraded` / `timeout` |
+| H5 | A0 → A3 | Stage B fan-out | `{vendor_key, invoice_number?, amount_base, invoice_date, entity_id}` | `DuplicateEvidence` | `success` / `degraded` / `timeout` |
+| H6 | A0 → A4 | Stage B fan-out | `{invoice(normalized), entity_id, category?, po_present, policy_version}` | `PolicyEvidence` | `success` / `degraded` / `timeout` |
+| H7 | A0 → A5 | Stage B fan-out | `{invoice, layout_meta?, field_confidences, vendor_registration_date?}` | `IntegrityEvidence` | `success` / `degraded` / `timeout` |
+| H8 | A0 → T1 | Stage C (fan-in complete) | `{all evidence + field_confidences + weights_version + coverage_map}` | `Score{composite, band, sub_scores, flags}` | `scored` |
+| H9 | A0 → A6 | Stage D | `{score, sub_scores, flags, evidence_bundle}` | `Explanation` | `success` / `regenerate_required` |
+| H10 | A0 → Handoff Boundary | Stage E | `ReliabilityAssessment` envelope | delivery ack | `delivered` / `schema_rejected` |
+
+### 3.3 Mandatory fields on **every** specialist response
+To support fan-in, scoring, and audit, each evidence response **must** include:
+
+| Field | Purpose |
+|---|---|
+| `status` (`success`/`degraded`/`timeout`/`error`) | Coverage tracking for scoring + degradation logic |
+| `coverage` (`full`/`partial`/`none`) | Tells T1 whether the dimension is trustworthy |
+| `source_ts` / query timestamp | Audit + freshness |
+| `evidence_refs[]` | Traceability for A6 narrative grounding |
+| `config_version` used | Reproducibility |
+
+---
+
+## 4. Routing Logic (How Work Is Dispatched)
+
+The Orchestrator runs a **deterministic state machine**, not LLM-based routing. Routing decisions are rule-driven and logged.
+
+### 4.1 Routing rules
+
+| Decision point | Rule | Outcome |
+|---|---|---|
+| **Intake validation** | Document type ∈ {pdf, image, structured} AND size/format within limits AND `entity_id` present | Accept → create job; else `rejected_intake` (no agent invoked). |
+| **Format → extraction path** | `type==structured` → parser path (no OCR); `type∈{pdf,image}` → OCR-assisted path | A1 internal branch (still single A1 call). |
+| **Extraction gate** | Minimal key fields present (vendor, amount, currency, date) at any confidence | Proceed to Stage B; else evaluate halt-vs-degrade (§7). |
+| **Fan-out eligibility** | Each branch dispatched only if its **required inputs exist** | If A3 lacks `invoice_number` AND `amount`, it still runs on available keys (recall-first); if A2 lacks any vendor signal, it returns `unknown_vendor` rather than being skipped. **No branch is silently skipped** — a skipped branch is recorded as `coverage: none`. |
+| **Branch concurrency** | Dispatch A2–A5 simultaneously with per-branch deadline | Wait for fan-in (§6). |
+| **Scoring dispatch** | Always, once fan-in resolves (partial allowed) | T1 receives a `coverage_map` so it can down-weight/flag unverified dimensions. |
+| **Narrative regeneration** | If A6 output fails grounding/guardrail validation | Re-dispatch A6 once with stricter instruction; second failure → fallback template (§5, §7). |
+
+### 4.2 What is **never** routed by the LLM
+- Stage transitions, retries, timeouts, degradation, scoring, and the final handoff are **all deterministic control logic**. LLMs only execute *within* A1, A5, A6. This protects the determinism/auditability constraint.
+
+---
+
+## 5. Shared State & Memory Model
+
+### 5.1 Per-job working state (the "job context")
+A single authoritative state object, owned by the Orchestrator, persisted to a **state store** and mirrored to the **audit/trace store**. Specialists do **not** hold state between calls.
+
+```json
+JobContext {
+  "job_id", "audit_record_id",
+  "status": "received|extracting|verifying|scoring|narrating|handing_off|
+             completed|completed_with_degradation|failed",
+  "stage_log": [ { "stage", "component", "status", "started_at", "ended_at", "attempt" } ],
+  "canonical_invoice": { ... },        // from A1
+  "field_confidences": { ... },
+  "evidence": {
+     "vendor": VendorEvidence|null,
+     "duplicate": DuplicateEvidence|null,
+     "policy": PolicyEvidence|null,
+     "integrity": IntegrityEvidence|null
+  },
+  "coverage_map": { "vendor":"full|partial|none", "duplicate":..., "policy":..., "integrity":... },
+  "score": Score|null,
+  "explanation": Explanation|null,
+  "config_versions": { "weights","policy","dup_rules","fx" },
+  "model_versions": { "A1","A5","A6" },
+  "flags_runtime": [ "fx_unavailable", "extraction_low_confidence", ... ],
+  "timestamps": { ... }
+}
+```
+
+### 5.2 Memory tiers
+
+| Tier | Scope | Contents | Persistence |
+|---|---|---|---|
+| **Working memory** | Single job, in-flight | `JobContext` | State store (TTL until job completes + grace) |
+| **Audit memory** | Permanent, immutable | All inputs, evidence, score derivation, prompts+model versions, timestamps | Audit/trace store (WORM, retention per compliance) |
+| **Reference memory (read-only)** | Cross-job | Vendor DB, historical invoice store, policy rules, FX rates | External systems; cached read-through |
+| **No conversational/episodic LLM memory** | — | Specialists are stateless; **no cross-invoice LLM memory** to prevent leakage & ensure reproducibility | N/A |
+| **Cache layer** | Short-TTL | FX rates (per-day), vendor lookups (short TTL, invalidated on entity), policy rule-set (version-pinned) | Cache store |
+
+### 5.3 Caching & freshness rules
+- **FX**: cached per `(currency, value_date)` — immutable once the date's reference rate is published.
+- **Vendor lookups**: cached with short TTL (e.g., 15 min) keyed by `(vendor_key, entity_id)`; **bank/payment-detail comparisons are never served from a cache older than the job's start** (security-sensitive).
+- **Duplicate detection**: **never cached** — must hit live history store to avoid missing a just-arrived duplicate (recall priority).
+- **Policy rules**: pinned to a `policy_version` for the whole job to guarantee reproducibility.
+
+---
+
+## 6. Fan-In, Partial Results & Degradation
+
+### 6.1 Fan-in protocol
+- Orchestrator dispatches A2–A5 concurrently with individual `deadline_at = now + branch_budget`.
+- Fan-in completes when **all four branches resolve** to a terminal status (`success`/`degraded`/`timeout`/`error`) OR the **stage-level deadline** elapses.
+- Per-branch results are written to `JobContext.evidence` and `coverage_map` as they arrive (no blocking on slowest if stage deadline hit).
+
+### 6.2 Branch outcome → coverage mapping
+
+| Branch outcome | `coverage` | Effect on scoring (T1) | Effect on output |
+|---|---|---|---|
+| `success` | `full` | Normal contribution | Dimension scored normally |
+| `degraded` (e.g., fuzzy-only, cache fallback) | `partial` | Reduced confidence weighting + caveat | Flag: `<dim>_partial_verification` |
+| `timeout` / `error` | `none` | Dimension marked **unverified** — **never scored as "pass"** | Flag: `<dim>_unverified`; explanation tells human to verify manually |
+
+> **Critical safety rule:** an unreachable check is **never** treated as a clean pass. Missing evidence lowers confidence and surfaces an explicit `unverified` flag — it must never silently inflate the reliability score.
+
+---
+
+## 7. Conflict Resolution
+
+Because specialists emit **independent evidence dimensions** (not competing opinions on the same question), most "conflict" is between an evidence signal and overall reliability, resolved deterministically by T1. The defined conflict cases:
+
+| Conflict type | Example | Resolution policy |
+|---|---|---|
+| **Cross-dimension contradiction** | Vendor `verified` but Integrity `high` anomaly + Policy `fail` | T1 aggregates per weights; **the most severe risk dimension dominates the band ceiling** — a `high`-severity integrity anomaly or exact-duplicate match **caps the band at Low** regardless of other green signals (configurable "hard-cap" rules, version-stamped). |
+| **Low-confidence extraction vs verification** | A1 extracted vendor at 0.55 confidence; A2 then reports `verified` | Verification result is annotated `based_on_low_confidence_input`; T1 applies a penalty and A6 explicitly tells the human to confirm the field. Verification cannot "launder" a low-confidence extraction into high reliability. |
+| **Fuzzy/ambiguous match** | A2 returns multiple vendor candidates; A3 returns a `near` duplicate | Treated as **flag, not resolution** — both ambiguity sets are passed through to the human; recall-first posture (never auto-dismiss). |
+| **Anomaly vs OCR noise** | A5 sees number-format inconsistency that may be OCR artifact | A5 must **distinguish** `anomaly` from `low_ocr_confidence` (Phase-3 constraint); if attributable to OCR, it is downgraded to an extraction caveat, not an integrity anomaly (no double-penalty). |
+| **Narrative vs evidence (grounding conflict)** | A6 asserts something not in the evidence bundle | Grounding validator rejects → regenerate once → fallback to deterministic template that lists score + flags verbatim. A6 can **never override** structured evidence. |
+| **No-decision conflict** | Any component emits an approval/rejection signal | **Hard-blocked** at Orchestrator + Handoff schema; logged as a guardrail violation; the field is dropped and an alert is raised. |
+
+> **Conflict-resolution principle:** Determinism wins. The **scoring engine (T1) is the single authority** for the composite score and band; the LLM narrative (A6) is strictly subordinate and explanatory. Hard-cap rules ensure severe risk signals can never be averaged away.
+
+---
+
+## 8. Timeout, Retry & Termination
+
+### 8.1 Latency budget (against ≤30s median / ≤90s p95 SLA)
+
+| Stage | Soft budget | Retry policy | On exhaustion |
+|---|---|---|---|
+| A — Extraction | 12s (OCR-heavy: up to 40s on p95 path) | 1 retry on transient OCR error | Halt or degrade (§8.3) |
+| B — each branch (A2–A5) | 6s per branch (parallel) | 1 retry w/ backoff on transient/network error | Branch → `timeout`, `coverage:none` |
+| B — stage deadline | 10s wall-clock (parallel) | — | Proceed with partial evidence |
+| C — Scoring (T1) | <500ms | none (deterministic) | `failed` if engine error (should not happen) |
+| D — Narrative (A6) | 5s | 1 regenerate on grounding failure | Fallback template |
+| E — Handoff | 2s | 2 retries on delivery failure | Queue for async retry; job `completed`, delivery `pending` |
+
+### 8.2 Termination conditions
+
+| Terminal status | Condition | Output |
+|---|---|---|
+| `completed` | All stages succeeded; full coverage | Full `ReliabilityAssessment`, `human_decision_required: true` |
+| `completed_with_degradation` | One or more branches `degraded`/`unverified`, but extraction gate passed and a defensible score produced | Assessment with explicit `unverified`/`partial` flags; band reflects reduced confidence |
+| `failed` | Extraction gate not passable AND no usable canonical invoice; OR scoring engine fault | **No score emitted**; structured `failed` payload routed to **human triage queue** with reason; audit record complete |
+
+> **Hard rule:** No terminal state ever sets approval/rejection. Even `failed` does **not** mean "reject" — it means "route to human." This preserves the 0-auto-approval invariant on every exit path.
+
+### 8.3 Extraction-gate halt-vs-degrade decision
+
+| Situation | Action |
+|---|---|
+| Minimal key fields present (any confidence) | **Degrade** → proceed to Stage B; flag low-confidence fields for HITL |
+| Document unreadable / OCR total failure / corrupt file | **Halt** → `failed`, route to human triage (manual entry), with reason |
+| Structured input fails schema parse | **Halt** → `failed` (cannot fabricate) |
+
+---
+
+## 9. Primary-Scenario Sequence Flows
+
+### 9.1 Scenario 1 — Clean digital invoice, known vendor (happy path)
+
+```
+Intake ──H1──▶ A0 (job created, audit_id)
+A0 ──H2──▶ A1: extract → CanonicalInvoice, confidences high (>0.9)
+A1 ──H3──▶ T2: FX normalize (if non-base currency) → amount_base
+A0: extraction gate PASS → fan-out
+A0 ──H4─▶ A2 ┐
+A0 ──H5─▶ A3 ├─ run in PARALLEL (≤10s)
+A0 ──H6─▶ A4 │   A2: verified  | A3: none | A4: pass | A5: arithmetic pass, no anomaly
+A0 ──H7─▶ A5 ┘
+A0: fan-in → coverage_map all "full"
+A0 ──H8──▶ T1: score → composite 92, band HIGH, flags: []
+A0 ──H9──▶ A6: narrative ("All checks passed; recommend review of standard items")
+A0 ──H10─▶ Handoff: ReliabilityAssessment {band:HIGH, human_decision_required:true}
+Status: completed
+```
+
+### 9.2 Scenario 3 — Suspected duplicate (hard-cap path)
+
+```
+A1: extract OK → A0 gate PASS → fan-out
+PARALLEL:
+  A2: verified
+  A3: status=near, matches=[{prior INV-2024-0412, matched_on:[vendor,amount,date_window], score 0.93}]
+  A4: pass
+  A5: no anomaly
+A0: fan-in
+A0 ──H8──▶ T1: duplicate=near (high severity) → HARD-CAP band to LOW (config rule),
+            composite reflects strong duplicate penalty, flag: "potential_duplicate"
+A0 ──H9──▶ A6: "This invoice closely matches a previously processed invoice
+            (INV-2024-0412) on vendor, amount, and date. Verify this is not a
+            double submission before approving." (cites evidence_ref)
+A0 ──H10─▶ Handoff: {band:LOW, key_flags:[potential_duplicate], items_to_verify:[prior invoice]}
+Status: completed
+```
+
+### 9.3 Scenario 2 + degradation — Scanned invoice, vendor DB timeout
+
+```
+A1: OCR path → CanonicalInvoice, 2 fields <0.70 conf → flagged needs_human_verification
+A0 gate PASS (degrade) → fan-out
+PARALLEL:
+  A2: TIMEOUT after retry → coverage:none → flag "vendor_unverified"
+  A3: none (full)
+  A4: pass (full)
+  A5: arithmetic pass; flags "low_ocr_confidence" on the two weak fields (NOT an anomaly)
+A0: fan-in → coverage_map{vendor:none, ...}
+A0 ──H8──▶ T1: vendor dimension NOT scored as pass → unverified penalty;
+            composite lands MEDIUM; flags: [vendor_unverified, extraction_low_confidence]
+A0 ──H9──▶ A6: "Vendor could not be verified (registry unavailable) and two fields
+            were read at low confidence — please confirm vendor and the highlighted
+            fields manually before approving."
+A0 ──H10─▶ Handoff: {band:MEDIUM, items_to_verify:[vendor, field_x, field_y]}
+Status: completed_with_degradation
+```
+
+---
+
+## 10. Orchestrator Control-Loop Pseudocode
+
+```python
+def run(job):
+    ctx = init_job(job)                      # H1: audit_id, validate intake
+    audit(ctx, "received")
+
+    # ---- Stage A: extraction gate ----
+    inv = call(A1, ctx)                       # H2 (+H3 FX inside)
+    ctx.canonical_invoice, ctx.field_confidences = inv.invoice, inv.confidences
+    if not minimal_fields_present(inv):
+        return finalize(ctx, status="failed", route="human_triage")  # never "reject"
+
+    # ---- Stage B: parallel verification fan-out ----
+    branches = parallel([
+        deadline(call, A2, ctx, budget=6s),   # H4
+        deadline(call, A3, ctx, budget=6s),   # H5  (no cache)
+        deadline(call, A4, ctx, budget=6s),   # H6
+        deadline(call, A5, ctx, budget=6s),   # H7
+    ], stage_deadline=10s)
+    for b in branches:
+        ctx.evidence[b.dim] = b.result_or_unverified()
+        ctx.coverage_map[b.dim] = b.coverage   # full|partial|none
+
+    # ---- Stage C: deterministic scoring (single authority) ----
+    ctx.score = call(T1, ctx.evidence, ctx.coverage_map, weights_version)  # H8
+    apply_hard_caps(ctx.score, ctx.evidence)   # duplicate/high-anomaly → band ceiling
+
+    # ---- Stage D: grounded narrative ----
+    expl = call(A6, ctx.score, ctx.evidence)   # H9
+    if not grounded(expl, ctx.evidence):
+        expl = call(A6, ..., strict=True) or fallback_template(ctx)
+
+    # ---- Stage E: advisory handoff (no approval field) ----
+    payload = assemble_assessment(ctx, expl)   # human_decision_required = TRUE (fixed)
+    assert "approved" not in payload and "rejected" not in payload  # invariant guard
+    deliver(payload)                           # H10
+
+    status = "completed_with_degradation" if any_unverified(ctx) else "completed"
+    return finalize(ctx, status)
+```
+
+---
+
+## 11. Open-Question Dependencies Carried Into Phase 5/6
+
+| Orchestration element | Depends on open question |
+|---|---|
+| Branch budgets / stage deadlines, sync-vs-async loop | #3 (sync/async, true SLA, volume) |
+| Hard-cap rules & weight config | #5 (score structure), #6 (duplicate definition) |
+| Vendor cache TTL & bank-detail freshness rule | #2 (vendor DB schema/access) |
+| Policy version pinning mechanism | #1 (policy rule source) |
+| Audit/WORM retention windows | #4 (compliance/residency regime) |
+
+---
+
+## Deviation Flag
+
+**None.** This orchestration design is fully consistent with Phases 1–3. It operationalizes three previously-stated invariants as concrete runtime mechanisms: (1) **no-auto-approve** → enforced at Orchestrator state machine + Handoff schema + invariant assertion; (2) **determinism/auditability** → LLM-free routing/scoring, version pinning, WORM audit memory, stateless specialists; (3) **unreachable check ≠ pass** → explicit `coverage:none` → `unverified` flag with scoring penalty. One refinement made explicit for build-readiness: introduction of **hard-cap band ceiling rules** in T1 (config-driven) so severe risk signals (exact duplicate, high-severity integrity anomaly) cannot be averaged away by green signals.
+  ✓ Phase 04 complete  120.0s · 22,318 chars
+─────────────────── [05/11] Phase 5 — Agent Development Plan ───────────────────
+  ↳ Sending request to claude-opus-4-8…
+Traceback (most recent call last):
+  File "/home/user/Agent-Studio/main.py", line 223, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/user/Agent-Studio/main.py", line 207, in main
+    pack = _run_streaming(orchestrator, args.requirement)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/Agent-Studio/main.py", line 134, in _run_streaming
+    for chunk in orchestrator.stream_phase(num, requirement, pack):
+  File "/home/user/Agent-Studio/agent_factory/orchestrator.py", line 108, in stream_phase
+    for chunk in self.client.stream(self.system_prompt, user_message, use_cache=True):
+  File "/home/user/Agent-Studio/agent_factory/utils/claude_client.py", line 116, in stream
+    with self.client.messages.stream(  # type: ignore[union-attr]
+  File "/usr/local/lib/python3.11/dist-packages/anthropic/lib/streaming/_messages.py", line 167, in __enter__
+    raw_stream = self.__api_request()
+                 ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/anthropic/_base_client.py", line 1374, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/dist-packages/anthropic/_base_client.py", line 1147, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CbcvJEEFYugqfGSq1v4EM'}
