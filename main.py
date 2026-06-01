@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""CLI entry point for the Agent Factory Orchestrator.
-
-Examples
---------
-    python main.py "Build an AI customer support agent for an e-commerce platform"
-    python main.py "..." --output-format json --output-file pack.json
-    python main.py "..." --phase 2
-    python main.py "..." --stream
-"""
+"""CLI entry point for the Agent Factory Orchestrator."""
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+import time
 
 try:
     from dotenv import load_dotenv
-
     load_dotenv()
-except Exception:  # pragma: no cover - dotenv is optional
+except Exception:
     pass
 
 from agent_factory import AgentFactoryOrchestrator, ClaudeClient
@@ -26,15 +18,90 @@ from agent_factory.models import PHASE_NUM_TO_KEY, PHASE_TITLES
 
 try:
     from rich.console import Console
-
+    from rich.panel import Panel
+    from rich.rule import Rule
+    from rich.text import Text
+    from rich.spinner import Spinner
+    from rich.live import Live
+    from rich import box
+    _rich = True
     _console = Console()
+except Exception:
+    _rich = False
+    _console = None  # type: ignore
 
-    def _info(msg: str) -> None:
-        _console.print(msg)
-except Exception:  # pragma: no cover - rich is optional
-    def _info(msg: str) -> None:
-        print(msg, file=sys.stderr)
 
+# ---- pretty-print helpers ------------------------------------------------
+
+def _header(msg: str) -> None:
+    if _rich:
+        _console.print(Rule(f"[bold cyan]{msg}[/bold cyan]", style="cyan"))
+    else:
+        print(f"\n{'=' * 70}\n  {msg}\n{'=' * 70}")
+
+
+def _phase_start(num: int, title: str) -> None:
+    if _rich:
+        _console.print(
+            f"\n[bold yellow]▶ [{num:02d}/11][/bold yellow] [bold]{title}[/bold]  "
+            f"[dim]calling claude-opus-4-8…[/dim]"
+        )
+    else:
+        print(f"\n▶ [{num:02d}/11] {title}  (calling model…)", flush=True)
+
+
+def _phase_done(num: int, title: str, elapsed: float, n_chars: int) -> None:
+    if _rich:
+        _console.print(
+            f"  [green]✓[/green] [bold]{title}[/bold]  "
+            f"[dim]{elapsed:.1f}s · {n_chars:,} chars[/dim]"
+        )
+    else:
+        print(f"  ✓ {title}  ({elapsed:.1f}s · {n_chars:,} chars)", flush=True)
+
+
+def _phase_output(num: int, title: str, text: str) -> None:
+    if _rich:
+        _console.print(
+            Panel(
+                text.strip()[:3000] + ("\n…[truncated]" if len(text) > 3000 else ""),
+                title=f"[cyan]{title}[/cyan]",
+                border_style="dim",
+                expand=False,
+            )
+        )
+    else:
+        sep = "-" * 60
+        print(f"\n{sep}\n{title}\n{sep}")
+        print(text.strip()[:3000])
+        if len(text) > 3000:
+            print("…[truncated]")
+
+
+def _summary(pack) -> None:
+    if _rich:
+        from rich.table import Table
+        t = Table(box=box.SIMPLE, show_header=True, header_style="bold")
+        t.add_column("Phase", style="cyan")
+        t.add_column("Chars", justify="right")
+        for key, content in pack.phases.items():
+            title = PHASE_TITLES.get(key, key)
+            t.add_row(title, f"{len(content):,}")
+        _console.print("\n")
+        _console.print(t)
+        _console.print(
+            f"[bold green]✓ Done.[/bold green]  "
+            f"Profiles extracted: [bold]{len(pack.profiles)}[/bold]  "
+            f"Eval cases: [bold]{len(pack.evaluation_cases)}[/bold]"
+        )
+    else:
+        print("\n--- Summary ---")
+        for key, content in pack.phases.items():
+            print(f"  {PHASE_TITLES.get(key, key)}: {len(content):,} chars")
+        print(f"Profiles: {len(pack.profiles)}  Eval cases: {len(pack.evaluation_cases)}")
+
+
+# ---- CLI -----------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -55,11 +122,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Run only phase N (1-11) instead of the full pipeline.",
     )
-    p.add_argument(
-        "--stream",
-        action="store_true",
-        help="Stream output as it is generated.",
-    )
     p.add_argument("--model", help="Override the model id (default: claude-opus-4-8).")
     p.add_argument(
         "--mock",
@@ -72,13 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    _header("AGENT FACTORY ORCHESTRATOR")
+
     if not os.environ.get("ANTHROPIC_API_KEY") and not args.mock:
-        _info(
-            "[yellow]No ANTHROPIC_API_KEY found — running in MOCK mode "
-            "(placeholder output).[/yellow]"
-            if "rich" in sys.modules
-            else "No ANTHROPIC_API_KEY found — running in MOCK mode (placeholder output)."
-        )
+        msg = "No ANTHROPIC_API_KEY — running in MOCK mode (placeholder output)."
+        if _rich:
+            _console.print(f"[yellow]⚠ {msg}[/yellow]")
+        else:
+            print(f"⚠ {msg}", file=sys.stderr)
 
     client_kwargs: dict = {}
     if args.model:
@@ -88,57 +151,70 @@ def main(argv: list[str] | None = None) -> int:
     client = ClaudeClient(**client_kwargs)
     orchestrator = AgentFactoryOrchestrator(client=client)
 
-    # Single-phase mode.
+    if _rich:
+        _console.print(f"[dim]Model:[/dim] [bold]{client.model}[/bold]")
+        _console.print(
+            f"[dim]Requirement:[/dim] {args.requirement[:120]}"
+            + ("…" if len(args.requirement) > 120 else "")
+        )
+    else:
+        print(f"Model: {client.model}")
+        print(f"Requirement: {args.requirement[:120]}")
+
+    # ---- single-phase mode -----------------------------------------------
     if args.phase is not None:
         if not (1 <= args.phase <= 11):
             print("--phase must be between 1 and 11", file=sys.stderr)
             return 2
         title = PHASE_TITLES[PHASE_NUM_TO_KEY[args.phase]]
-        _info(f"Running {title}...")
-        if args.stream:
-            for chunk in orchestrator.stream_phase(args.phase, args.requirement):
-                print(chunk, end="", flush=True)
-            print()
-            return 0
+        _phase_start(args.phase, title)
+        t0 = time.time()
         output, _ = orchestrator.run_phase(args.phase, args.requirement)
-        _write(output, args.output_file)
+        _phase_done(args.phase, title, time.time() - t0, len(output))
+        _phase_output(args.phase, title, output)
+        if args.output_file:
+            with open(args.output_file, "w", encoding="utf-8") as f:
+                f.write(output)
+            print(f"Written to {args.output_file}")
         return 0
 
-    # Full pipeline.
-    if args.stream:
-        current = {"n": 0}
+    # ---- full pipeline with verbose per-phase logging --------------------
+    _header(f"Running all 11 phases")
+    timings: dict[int, float] = {}
 
-        def on_chunk(num: int, text: str) -> None:
-            if num != current["n"]:
-                current["n"] = num
-                title = PHASE_TITLES[PHASE_NUM_TO_KEY[num]]
-                print(f"\n\n===== {title} =====\n", flush=True)
-            print(text, end="", flush=True)
+    def progress(num: int, title: str, output: str) -> None:
+        elapsed = time.time() - timings.get(num, time.time())
+        _phase_done(num, title, elapsed, len(output))
+        _phase_output(num, title, output)
 
-        pack = orchestrator.run_full_streaming(args.requirement, on_chunk=on_chunk)
-        print()
-    else:
-        def progress(num: int, title: str, _output: str) -> None:
-            _info(f"[green]✓[/green] {title}" if "rich" in sys.modules else f"[done] {title}")
+    # Monkey-patch _run_phase_num to capture start times and print header.
+    original_run = orchestrator._run_phase_num
 
-        pack = orchestrator.run_full(args.requirement, progress=progress)
+    def _timed_run(phase_num: int, requirement: str, pack) -> str:
+        title = PHASE_TITLES[PHASE_NUM_TO_KEY[phase_num]]
+        _phase_start(phase_num, title)
+        timings[phase_num] = time.time()
+        result = original_run(phase_num, requirement, pack)
+        return result
 
-    content = pack.to_json() if args.output_format == "json" else pack.to_markdown()
+    orchestrator._run_phase_num = _timed_run  # type: ignore[method-assign]
+
+    pack = orchestrator.run_full(args.requirement, progress=progress)
+
+    _summary(pack)
+
     if args.output_file:
         pack.save_report(args.output_file, fmt=args.output_format)
-        _info(f"Report written to {args.output_file}")
-    elif not args.stream:
-        print(content)
-    return 0
-
-
-def _write(content: str, output_file: str | None) -> None:
-    if output_file:
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(content)
-        _info(f"Written to {output_file}")
+        msg = f"Report written to {args.output_file}"
+        if _rich:
+            _console.print(f"[green]{msg}[/green]")
+        else:
+            print(msg)
     else:
+        content = pack.to_json() if args.output_format == "json" else pack.to_markdown()
         print(content)
+
+    return 0
 
 
 if __name__ == "__main__":
