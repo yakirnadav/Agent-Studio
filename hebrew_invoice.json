@@ -1,0 +1,19 @@
+{
+  "vendor_name": "לחברה",
+  "vendor_tax_id": "580457232",
+  "invoice_number": "800037829",
+  "invoice_date": "2026-06-01",
+  "due_date": "2026-06-01",
+  "po_number": null,
+  "currency": "ILS",
+  "line_items": [
+    {
+      "description": "Bit",
+      "quantity": 1,
+      "unit_price": 100.00,
+      "amount": 100.00
+    }
+  ],
+  "tax_amount": 0.00,
+  "total_amount": 100.00
+}
