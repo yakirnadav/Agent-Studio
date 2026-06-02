@@ -342,10 +342,24 @@ Return ONLY valid JSON, no markdown or explanation outside the JSON."""
         band = Band(assessment_data.get("band", "Medium"))
         score = assessment_data.get("score", 50)
 
+        # Normalize severity values from Claude
+        def normalize_severity(sev_str):
+            sev_lower = str(sev_str).lower().strip()
+            if sev_lower in ["critical", "critical_issue"]:
+                return Severity.CRITICAL
+            elif sev_lower in ["high", "high-severity"]:
+                return Severity.HIGH
+            elif sev_lower in ["medium", "moderate"]:
+                return Severity.MEDIUM
+            elif sev_lower in ["low", "minor"]:
+                return Severity.LOW
+            else:
+                return Severity.INFO
+
         reasons = [
             TopReason(
                 signal_code=r.get("signal_code", "unknown"),
-                severity=Severity(r.get("severity", "medium")),
+                severity=normalize_severity(r.get("severity", "medium")),
                 contribution=r.get("contribution", ""),
             )
             for r in assessment_data.get("top_reasons", [])
