@@ -1,0 +1,25 @@
+{
+  "vendor_name": "ACME Corp",
+  "vendor_tax_id": "12-3456789",
+  "invoice_number": "INV-00001",
+  "invoice_date": "2026-06-01",
+  "due_date": "2026-07-01",
+  "po_number": "PO-2026-010",
+  "currency": "USD",
+  "line_items": [
+    {
+      "description": "Professional Services",
+      "quantity": 5,
+      "unit_price": 200.00,
+      "amount": 1000.00
+    },
+    {
+      "description": "Software License",
+      "quantity": 1,
+      "unit_price": 500.00,
+      "amount": 500.00
+    }
+  ],
+  "tax_amount": 150.00,
+  "total_amount": 1650.00
+}
