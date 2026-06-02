@@ -1,0 +1,103 @@
+{
+  "assessment_id": "ced3b170-1c60-44a4-81dc-73513101e967",
+  "invoice_hash": "d0ab101bf941e4d0",
+  "extracted_invoice": {
+    "vendor_name": "\u05dc\u05d7\u05d1\u05e8\u05d4",
+    "vendor_tax_id": "580457232",
+    "total_amount": 100.0,
+    "currency": "ILS",
+    "invoice_date": "2026-06-01",
+    "due_date": "2026-06-01",
+    "invoice_number": "800037829",
+    "po_number": null,
+    "tax_amount": 0.0,
+    "line_items": [
+      {
+        "description": "Bit",
+        "quantity": 1,
+        "unit_price": 100.0,
+        "amount": 100.0
+      }
+    ],
+    "per_field_confidence": {
+      "vendor_name": 0.95,
+      "total_amount": 0.95,
+      "currency": 0.95,
+      "invoice_date": 0.93,
+      "tax_amount": 0.88
+    },
+    "extraction_flags": []
+  },
+  "validation_result": {
+    "arithmetic_consistent": true,
+    "arithmetic_discrepancies": [],
+    "vendor_status": "not_found",
+    "vendor_match_score": null,
+    "duplicate_status": "none",
+    "duplicate_refs": [],
+    "format_consistent": true,
+    "format_anomalies": [],
+    "authenticity_signals": [
+      {
+        "code": "vendor_not_found",
+        "severity": "high",
+        "detail": "Vendor '\u05dc\u05d7\u05d1\u05e8\u05d4' not found in registry"
+      }
+    ]
+  },
+  "compliance_result": {
+    "compliance_status": "violations_found",
+    "violations": [
+      {
+        "rule_id": "POL-004",
+        "policy_version": "1.0",
+        "description": "Currency ILS not in approved list",
+        "severity": "medium",
+        "observed": "ILS",
+        "threshold": "USD, EUR, GBP"
+      }
+    ],
+    "required_approval_tier": null,
+    "normalization": {
+      "base_currency": "USD",
+      "fx_rate": 1.1,
+      "fx_source": "mock_rates"
+    }
+  },
+  "assessment": {
+    "reliability": {
+      "band": "Low",
+      "score": 45,
+      "rubric_version": "1.0"
+    },
+    "top_reasons": [
+      {
+        "signal_code": "currency_not_approved",
+        "severity": "high",
+        "contribution": -35
+      },
+      {
+        "signal_code": "vendor_not_found",
+        "severity": "high",
+        "contribution": -25
+      },
+      {
+        "signal_code": "extraction_high_confidence",
+        "severity": "info",
+        "contribution": 10
+      }
+    ],
+    "flags": [],
+    "explanation": "The invoice fails a hard compliance rule because currency ILS is not in the approved list per Rule POL-004, which is a significant blocker for expense approval. Additionally, the vendor '\u05dc\u05d7\u05d1\u05e8\u05d4' could not be matched in the vendor registry, raising concerns about the legitimacy and traceability of the payee. While the data was extracted with high confidence (95%+) and the arithmetic is internally consistent (line items equal the total), these positive factors cannot offset the policy violation and unverified vendor. This invoice should not be approved without resolving the currency exception and verifying the vendor identity.",
+    "fields_summary": {
+      "vendor": "\u05dc\u05d7\u05d1\u05e8\u05d4",
+      "amount": "100.0 ILS",
+      "date": "2026-06-01",
+      "invoice_number": "800037829",
+      "line_items_count": 1
+    },
+    "recommendation_type": "advisory_only",
+    "human_review_required": true
+  },
+  "flags": []
+}
