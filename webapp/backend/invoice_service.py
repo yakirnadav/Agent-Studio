@@ -67,7 +67,7 @@ def run_assessment(invoice_data: dict) -> dict:
         from invoice_checker.agents import Orchestrator
         orchestrator = Orchestrator()
 
-    bundle = orchestrator.run(invoice_data)
+    bundle = orchestrator.assess_invoice(invoice_data)
     return bundle.to_dict()
 
 
